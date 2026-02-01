@@ -17,7 +17,7 @@ import {
   writeCache,
 } from "./web-shared.js";
 
-const SEARCH_PROVIDERS = ["brave", "perplexity"] as const;
+const SEARCH_PROVIDERS = ["brave", "perplexity", "serpapi"] as const;
 const DEFAULT_SEARCH_COUNT = 5;
 const MAX_SEARCH_COUNT = 10;
 
@@ -27,6 +27,9 @@ const PERPLEXITY_DIRECT_BASE_URL = "https://api.perplexity.ai";
 const DEFAULT_PERPLEXITY_MODEL = "perplexity/sonar-pro";
 const PERPLEXITY_KEY_PREFIXES = ["pplx-"];
 const OPENROUTER_KEY_PREFIXES = ["sk-or-"];
+
+const SERPAPI_SEARCH_ENDPOINT = "https://serpapi.com/search";
+const DEFAULT_SERPAPI_ENGINE = "google";
 
 const SEARCH_CACHE = new Map<string, CacheEntry<Record<string, unknown>>>();
 const BRAVE_FRESHNESS_SHORTCUTS = new Set(["pd", "pw", "pm", "py"]);
@@ -103,6 +106,25 @@ type PerplexitySearchResponse = {
 
 type PerplexityBaseUrlHint = "direct" | "openrouter";
 
+type SerpApiConfig = {
+  apiKey?: string;
+  engine?: string;
+};
+
+type SerpApiOrganicResult = {
+  title?: string;
+  link?: string;
+  snippet?: string;
+  date?: string;
+  source?: string;
+};
+
+type SerpApiSearchResponse = {
+  organic_results?: SerpApiOrganicResult[];
+  knowledge_graph?: Record<string, unknown>;
+  answer_box?: Record<string, unknown>;
+};
+
 function resolveSearchConfig(cfg?: OpenClawConfig): WebSearchConfig {
   const search = cfg?.tools?.web?.search;
   if (!search || typeof search !== "object") {
@@ -137,6 +159,14 @@ function missingSearchKeyPayload(provider: (typeof SEARCH_PROVIDERS)[number]) {
       docs: "https://docs.openclaw.ai/tools/web",
     };
   }
+  if (provider === "serpapi") {
+    return {
+      error: "missing_serpapi_api_key",
+      message:
+        "web_search (serpapi) needs an API key. Set SERPAPI_API_KEY in the Gateway environment, or configure tools.web.search.serpapi.apiKey.",
+      docs: "https://docs.openclaw.ai/tools/web",
+    };
+  }
   return {
     error: "missing_brave_api_key",
     message: `web_search needs a Brave Search API key. Run \`${formatCliCommand("openclaw configure --section web")}\` to store it, or set BRAVE_API_KEY in the Gateway environment.`,
@@ -151,6 +181,9 @@ function resolveSearchProvider(search?: WebSearchConfig): (typeof SEARCH_PROVIDE
       : "";
   if (raw === "perplexity") {
     return "perplexity";
+  }
+  if (raw === "serpapi") {
+    return "serpapi";
   }
   if (raw === "brave") {
     return "brave";
@@ -245,6 +278,94 @@ function resolvePerplexityModel(perplexity?: PerplexityConfig): string {
       ? perplexity.model.trim()
       : "";
   return fromConfig || DEFAULT_PERPLEXITY_MODEL;
+}
+
+function resolveSerpApiConfig(search?: WebSearchConfig): SerpApiConfig {
+  if (!search || typeof search !== "object") {
+    return {};
+  }
+  const serpapi = "serpapi" in search ? search.serpapi : undefined;
+  if (!serpapi || typeof serpapi !== "object") {
+    return {};
+  }
+  return serpapi as SerpApiConfig;
+}
+
+function resolveSerpApiApiKey(serpapi?: SerpApiConfig): string | undefined {
+  const fromConfig = normalizeApiKey(serpapi?.apiKey);
+  if (fromConfig) {
+    return fromConfig;
+  }
+  const fromEnv = normalizeApiKey(process.env.SERPAPI_API_KEY);
+  return fromEnv || undefined;
+}
+
+function resolveSerpApiEngine(serpapi?: SerpApiConfig): string {
+  const fromConfig =
+    serpapi && "engine" in serpapi && typeof serpapi.engine === "string"
+      ? serpapi.engine.trim()
+      : "";
+  return fromConfig || DEFAULT_SERPAPI_ENGINE;
+}
+
+async function runSerpApiSearch(params: {
+  query: string;
+  apiKey: string;
+  count: number;
+  engine: string;
+  timeoutSeconds: number;
+  country?: string;
+  search_lang?: string;
+}): Promise<Record<string, unknown>> {
+  const url = new URL(SERPAPI_SEARCH_ENDPOINT);
+  url.searchParams.set("api_key", params.apiKey);
+  url.searchParams.set("q", params.query);
+  url.searchParams.set("num", String(params.count));
+  url.searchParams.set("engine", params.engine);
+  if (params.country) {
+    url.searchParams.set("gl", params.country.toLowerCase());
+  }
+  if (params.search_lang) {
+    url.searchParams.set("hl", params.search_lang);
+  }
+
+  const res = await fetch(url.toString(), {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+  });
+
+  if (!res.ok) {
+    const detail = await readResponseText(res);
+    throw new Error(`SerpAPI error (${res.status}): ${detail || res.statusText}`);
+  }
+
+  const data = (await res.json()) as SerpApiSearchResponse;
+  const results = Array.isArray(data.organic_results) ? data.organic_results : [];
+  const mapped = results.map((entry) => ({
+    title: entry.title ?? "",
+    url: entry.link ?? "",
+    description: entry.snippet ?? "",
+    published: entry.date ?? undefined,
+    siteName: entry.source ?? resolveSiteName(entry.link ?? ""),
+  }));
+
+  const payload: Record<string, unknown> = {
+    query: params.query,
+    provider: "serpapi",
+    engine: params.engine,
+    count: mapped.length,
+    results: mapped,
+  };
+
+  if (data.knowledge_graph) {
+    payload.knowledgeGraph = data.knowledge_graph;
+  }
+  if (data.answer_box) {
+    payload.answerBox = data.answer_box;
+  }
+
+  return payload;
 }
 
 function resolveSearchCount(value: unknown, fallback: number): number {
@@ -363,12 +484,17 @@ async function runWebSearch(params: {
   freshness?: string;
   perplexityBaseUrl?: string;
   perplexityModel?: string;
+  serpApiEngine?: string;
 }): Promise<Record<string, unknown>> {
-  const cacheKey = normalizeCacheKey(
-    params.provider === "brave"
-      ? `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}:${params.freshness || "default"}`
-      : `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}`,
-  );
+  let rawCacheKey: string;
+  if (params.provider === "brave") {
+    rawCacheKey = `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}:${params.freshness || "default"}`;
+  } else if (params.provider === "serpapi") {
+    rawCacheKey = `${params.provider}:${params.serpApiEngine || DEFAULT_SERPAPI_ENGINE}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}`;
+  } else {
+    rawCacheKey = `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}`;
+  }
+  const cacheKey = normalizeCacheKey(rawCacheKey);
   const cached = readCache(SEARCH_CACHE, cacheKey);
   if (cached) {
     return { ...cached.value, cached: true };
@@ -395,6 +521,25 @@ async function runWebSearch(params: {
     };
     writeCache(SEARCH_CACHE, cacheKey, payload, params.cacheTtlMs);
     return payload;
+  }
+
+  if (params.provider === "serpapi") {
+    const serpResult = await runSerpApiSearch({
+      query: params.query,
+      apiKey: params.apiKey,
+      count: params.count,
+      engine: params.serpApiEngine ?? DEFAULT_SERPAPI_ENGINE,
+      timeoutSeconds: params.timeoutSeconds,
+      country: params.country,
+      search_lang: params.search_lang,
+    });
+
+    const serpPayload = {
+      ...serpResult,
+      tookMs: Date.now() - start,
+    };
+    writeCache(SEARCH_CACHE, cacheKey, serpPayload, params.cacheTtlMs);
+    return serpPayload;
   }
 
   if (params.provider !== "brave") {
@@ -463,11 +608,14 @@ export function createWebSearchTool(options?: {
 
   const provider = resolveSearchProvider(search);
   const perplexityConfig = resolvePerplexityConfig(search);
+  const serpApiConfig = resolveSerpApiConfig(search);
 
   const description =
     provider === "perplexity"
       ? "Search the web using Perplexity Sonar (direct or via OpenRouter). Returns AI-synthesized answers with citations from real-time web search."
-      : "Search the web using Brave Search API. Supports region-specific and localized search via country and language parameters. Returns titles, URLs, and snippets for fast research.";
+      : provider === "serpapi"
+        ? "Search the web using SerpAPI. Supports multiple search engines (Google, Bing, etc.), region-specific results, and enhanced data (knowledge graph, answer box)."
+        : "Search the web using Brave Search API. Supports region-specific and localized search via country and language parameters. Returns titles, URLs, and snippets for fast research.";
 
   return {
     label: "Web Search",
@@ -478,7 +626,11 @@ export function createWebSearchTool(options?: {
       const perplexityAuth =
         provider === "perplexity" ? resolvePerplexityApiKey(perplexityConfig) : undefined;
       const apiKey =
-        provider === "perplexity" ? perplexityAuth?.apiKey : resolveSearchApiKey(search);
+        provider === "perplexity"
+          ? perplexityAuth?.apiKey
+          : provider === "serpapi"
+            ? resolveSerpApiApiKey(serpApiConfig)
+            : resolveSearchApiKey(search);
 
       if (!apiKey) {
         return jsonResult(missingSearchKeyPayload(provider));
@@ -524,6 +676,7 @@ export function createWebSearchTool(options?: {
           perplexityAuth?.apiKey,
         ),
         perplexityModel: resolvePerplexityModel(perplexityConfig),
+        serpApiEngine: resolveSerpApiEngine(serpApiConfig),
       });
       return jsonResult(result);
     },
@@ -534,4 +687,6 @@ export const __testing = {
   inferPerplexityBaseUrlFromApiKey,
   resolvePerplexityBaseUrl,
   normalizeFreshness,
+  resolveSerpApiEngine,
+  resolveSerpApiApiKey,
 } as const;

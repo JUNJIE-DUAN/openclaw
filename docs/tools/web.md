@@ -1,9 +1,10 @@
 ---
-summary: "Web search + fetch tools (Brave Search API, Perplexity direct/OpenRouter)"
+summary: "Web search + fetch tools (Brave Search API, Perplexity direct/OpenRouter, SerpAPI)"
 read_when:
   - You want to enable web_search or web_fetch
   - You need Brave Search API key setup
   - You want to use Perplexity Sonar for web search
+  - You want to use SerpAPI for web search
 title: "Web Tools"
 ---
 
@@ -11,7 +12,7 @@ title: "Web Tools"
 
 OpenClaw ships two lightweight web tools:
 
-- `web_search` — Search the web via Brave Search API (default) or Perplexity Sonar (direct or via OpenRouter).
+- `web_search` — Search the web via Brave Search API (default), Perplexity Sonar, or SerpAPI.
 - `web_fetch` — HTTP fetch + readable extraction (HTML → markdown/text).
 
 These are **not** browser automation. For JS-heavy sites or logins, use the
@@ -33,6 +34,7 @@ These are **not** browser automation. For JS-heavy sites or logins, use the
 | ------------------- | -------------------------------------------- | ---------------------------------------- | -------------------------------------------- |
 | **Brave** (default) | Fast, structured results, free tier          | Traditional search results               | `BRAVE_API_KEY`                              |
 | **Perplexity**      | AI-synthesized answers, citations, real-time | Requires Perplexity or OpenRouter access | `OPENROUTER_API_KEY` or `PERPLEXITY_API_KEY` |
+| **SerpAPI**         | Multi-engine (Google, Bing, etc.), knowledge graph, answer box | Paid API, no free tier | `SERPAPI_API_KEY` |
 
 See [Brave Search setup](/brave-search) and [Perplexity Sonar](/perplexity) for provider-specific details.
 
@@ -43,7 +45,7 @@ Set the provider in config:
   tools: {
     web: {
       search: {
-        provider: "brave", // or "perplexity"
+        provider: "brave", // or "perplexity" or "serpapi"
       },
     },
   },
@@ -139,6 +141,52 @@ If no base URL is set, OpenClaw chooses a default based on the API key source:
 | `perplexity/sonar-pro` (default) | Multi-step reasoning with web search | Complex questions |
 | `perplexity/sonar-reasoning-pro` | Chain-of-thought analysis            | Deep research     |
 
+## Using SerpAPI
+
+SerpAPI provides access to multiple search engines (Google, Bing, Yahoo, etc.) with
+structured results including knowledge graph and answer box data.
+
+### Getting a SerpAPI key
+
+1. Create an account at https://serpapi.com/
+2. Copy your API key from the dashboard
+
+### Setting up SerpAPI search
+
+```json5
+{
+  tools: {
+    web: {
+      search: {
+        enabled: true,
+        provider: "serpapi",
+        serpapi: {
+          // API key (optional if SERPAPI_API_KEY is set)
+          apiKey: "your-serpapi-key",
+          // Search engine (defaults to "google")
+          engine: "google",
+        },
+      },
+    },
+  },
+}
+```
+
+**Environment alternative:** set `SERPAPI_API_KEY` in the Gateway environment.
+
+### Available SerpAPI engines
+
+| Engine     | Description              |
+| ---------- | ------------------------ |
+| `google`   | Google Search (default)  |
+| `bing`     | Bing Search              |
+| `yahoo`    | Yahoo Search             |
+| `baidu`    | Baidu Search             |
+| `yandex`   | Yandex Search            |
+| `duckduckgo` | DuckDuckGo Search      |
+
+SerpAPI may return enhanced data (knowledge graph, answer box) alongside organic results when available.
+
 ## web_search
 
 Search the web using your configured provider.
@@ -149,6 +197,7 @@ Search the web using your configured provider.
 - API key for your chosen provider:
   - **Brave**: `BRAVE_API_KEY` or `tools.web.search.apiKey`
   - **Perplexity**: `OPENROUTER_API_KEY`, `PERPLEXITY_API_KEY`, or `tools.web.search.perplexity.apiKey`
+  - **SerpAPI**: `SERPAPI_API_KEY` or `tools.web.search.serpapi.apiKey`
 
 ### Config
 

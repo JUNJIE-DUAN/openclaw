@@ -336,8 +336,8 @@ export type ToolsConfig = {
     search?: {
       /** Enable web search tool (default: true when API key is present). */
       enabled?: boolean;
-      /** Search provider ("brave" or "perplexity"). */
-      provider?: "brave" | "perplexity";
+      /** Search provider ("brave", "perplexity", or "serpapi"). */
+      provider?: "brave" | "perplexity" | "serpapi";
       /** Brave Search API key (optional; defaults to BRAVE_API_KEY env var). */
       apiKey?: string;
       /** Default search results count (1-10). */
@@ -346,6 +346,13 @@ export type ToolsConfig = {
       timeoutSeconds?: number;
       /** Cache TTL in minutes for search results. */
       cacheTtlMinutes?: number;
+      /** SerpAPI-specific configuration (used when provider="serpapi"). */
+      serpapi?: {
+        /** API key for SerpAPI (defaults to SERPAPI_API_KEY env var). */
+        apiKey?: string;
+        /** Search engine to use (defaults to "google"). */
+        engine?: string;
+      };
       /** Perplexity-specific configuration (used when provider="perplexity"). */
       perplexity?: {
         /** API key for Perplexity or OpenRouter (defaults to PERPLEXITY_API_KEY or OPENROUTER_API_KEY env var). */
