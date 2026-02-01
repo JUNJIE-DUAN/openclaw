@@ -99,13 +99,27 @@ export function isBundledSkillAllowed(entry: SkillEntry, allowlist?: string[]): 
 export function hasBinary(bin: string): boolean {
   const pathEnv = process.env.PATH ?? "";
   const parts = pathEnv.split(path.delimiter).filter(Boolean);
+  const isWin = process.platform === "win32";
+  const winExts = isWin
+    ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").toLowerCase().split(";").filter(Boolean)
+    : [];
   for (const part of parts) {
     const candidate = path.join(part, bin);
     try {
-      fs.accessSync(candidate, fs.constants.X_OK);
+      fs.accessSync(candidate, isWin ? fs.constants.F_OK : fs.constants.X_OK);
       return true;
     } catch {
       // keep scanning
+    }
+    if (isWin) {
+      for (const ext of winExts) {
+        try {
+          fs.accessSync(candidate + ext, fs.constants.F_OK);
+          return true;
+        } catch {
+          // keep scanning
+        }
+      }
     }
   }
   return false;
